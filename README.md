@@ -1,5 +1,7 @@
 # 🍟 麦麦羊毛管家 · mcd-coupon-butler
 
+[中文](README.md) | **English →** [README.en.md](README.en.md)
+
 > 把麦当劳 App 里散落各处的 **优惠券、积分、抽奖机会、商城兑换、营销活动、节气徽章** 收拢成一个入口：
 > 该领的时候自动领，要过期的时候提前喊，能兑换的时候帮你算清「哪一笔最值」，有上新和联名的时候第一时间告诉你，节气徽章别因为"忘了下单"而错过。
 
@@ -234,7 +236,8 @@ python3 scripts/mcd_wool.py badge
 ├── scripts/
 │   ├── mcd_wool.py           # 零依赖 MCP 客户端（仅用 Python 标准库）
 │   └── solar_terms.py        # 二十四节气算法（寿星公式，含官方窗口自检）
-├── README.md                 # 你正在看的这份
+├── README.md                 # 你正在看的这份（中文）
+├── README.en.md              # English version
 ├── MCP_INTEGRATION.md        # 实际使用的 MCP Server / Tool / 调用流程 / 业务价值
 ├── CONTEST_DECLARATION.md    # 参赛声明
 ├── mcp-config.example.json   # 脱敏后的 MCP 配置示例
