@@ -17,6 +17,9 @@ venv/
 # macOS
 .DS_Store
 
+# WorkBuddy 本地工作区数据（开发笔记等，不对外发布）
+.workbuddy/
+
 # 编辑器
 .idea/
 .vscode/
