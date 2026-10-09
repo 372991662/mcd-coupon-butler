@@ -121,29 +121,32 @@ Help me claim my McDonald's coupons and check what's expiring
 
 > **You**: Claim my McDonald's deals for me
 >
-> **Butler**: ## 🍟 Coupon wallet checkup · 2026-10-09
-> **6 new coupons claimed, 11 in the wallet now**
+> **Butler**: ## 🍟 Coupon & points checkup · 2026-10-09
+> **One-tap claim done — wallet went 1 → 9 coupons**
 >
 > ### 🚨 Expiring soon (≤3 days)
 > | Coupon | Value | Expires | Left |
 > |---|---|---|---|
-> | Spicy Chicken Burger | −¥8 | 2026-10-11 | **2 days** |
-> | Medium Fries | Free medium fries | 2026-10-12 | **3 days** |
+> | McFlurry — any flavour | ¥9.9 with coupon | 2026-10-09 | **Today** |
+> | Fries — any size | ¥9.9 with coupon | 2026-10-09 | **Today** |
+> | Chocolate-filled hotcakes sausage & egg meal | ¥29.9 with coupon | 2026-10-10 | **1 day** |
+> | McFlurry — buy one get one free | ¥15 with coupon | 2026-10-11 | **2 days** |
 >
 > ### 📅 Valid coupons (sorted by expiry)
 > | Coupon | Value | Expires | Left |
 > |---|---|---|---|
-> | Delivery ¥8 off ¥30 | −¥8 | 2026-10-18 | 9 days |
-> | ... | | | |
+> | Medium iced americano for ¥9.9 | ¥9.9 with coupon | 2026-10-15 | 6 days |
+> | Chocolate-filled hotcakes sausage & egg meal ×3 | ¥29.9 with coupon | 10-17 ~ 10-18 | 8~9 days |
+> | Dragon-flame cheese chicken combo | Special price | 2026-11-03 | 25 days |
 >
 > ### 💎 Points
-> Available 1,860 · Expiring 320 · Lifetime 5,420
+> Available 1,375 · Expired 2,331.9 · Lifetime 5,503.9
 >
-> **Suggestion**: Use the two expiring coupons first (saves ¥13 total), then spend the 320 expiring points on the lottery before they reset.
+> **Suggestion**: The McFlurry and Fries coupons expire today — use them before you lose them. Two more ¥29.9 hotcake meals expire within 2 days.
 
 ### Example 2: What's the best thing to redeem?
 
-> **You**: I have 1,800 points — what's the best thing to get?
+> **You**: I have 1,375 points — what's the best thing to get?
 >
 > **Butler**: Ranked by value-per-point, here's your top 3 within budget:
 >
@@ -153,7 +156,7 @@ Help me claim my McDonald's coupons and check what's expiring
 > | McCafé medium | 800 | ¥22.0 | ¥0.028 |
 > | Delivery fee waiver | 300 | ¥6.0 | ¥0.020 |
 >
-> **Suggestion**: Three Big Mac vouchers is the best value. Want me to redeem them? That will cost 1,500 points.
+> **Suggestion**: Two Big Mac vouchers is the best value. Want me to redeem them? That will cost 1,000 points.
 
 ### Example 3: What's on today? (Campaign radar)
 
