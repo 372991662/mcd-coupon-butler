@@ -34,7 +34,7 @@
 | 🎁 **一键薅券** | 一次调用领走麦麦省当前全部可领券，不用再逐张点 | `available-coupons` `auto-bind-coupons` |
 | 🚨 **临期预警** | 券包按到期时间排序，≤3 天的单独置顶标红 | `query-my-coupons` `now-time-info` |
 | 💎 **积分体检** | 可用 / 累计 / 冻结 / 即将过期，四档一次看清 | `query-my-account` |
-| 🎰 **抽奖管家** | 查活动、看可用次数、代抽、汇总战绩 | `query-lottery-info` `draw-lottery` `query-my-prizes` |
+| 🎰 **抽奖管家** | 查活动、看可用次数、**经你确认后**代抽、汇总战绩 | `query-lottery-info` `draw-lottery` `query-my-prizes` |
 | 💰 **积分最优兑换** | 按「每积分价值」排序，告诉你积分换什么最划算 | `mall-points-products` `mall-product-detail` |
 | 🍔 **点餐用券** | 查当前门店可用券，帮你试算最省的下单组合 | `query-store-coupons` `calculate-price` |
 | 📡 **活动雷达** | 查当月营销活动日历，标出**今天就能吃**的上新 / 联名 / 限定 | `campaign-calendar` `now-time-info` `query-meals` |
@@ -264,7 +264,8 @@ python3 scripts/mcd_wool.py badge
 
 - **不保存、不上传任何个人数据**：所有调用都是发往麦当劳官方 MCP 服务 `https://mcp.mcd.cn` 的实时请求，本项目不自建服务端、不做数据落地。
 - **Token 只存在你本机**：优先读环境变量 `MCD_MCP_TOKEN`；如需本地缓存，写入 `~/.mcd-coupon-butler/MCD_MCP_TOKEN` 并 `chmod 600`，且**必须经你明确同意**。
-- **消耗类操作需二次确认**：唯一会扣积分的是 `mall-create-order`（积分兑换下单），执行前必须向你复述消耗与所得。
+- **消耗积分的操作一律不自动执行（硬闸门）**：`draw-lottery`（抽奖，单次 24 积分）与 `mall-create-order`（积分兑换）会在**代码层被拦截**，必须经你明确确认、并显式加上 `--confirm` 才放行；`create-order` / `party-order-create`（下单，产生实际支付）同样拦截。唯一可自动执行的是 `auto-bind-coupons`（领券，只增不减、零成本）。
+- **闸门被触发时不会静默失败**：会明确告诉你"这个操作会消耗什么、花了多少"，等你点头再执行，绝不擅自替你花掉积分。
 - **不要把 Token 提交到仓库**：仓库内所有配置文件仅使用环境变量占位符。
 
 ---

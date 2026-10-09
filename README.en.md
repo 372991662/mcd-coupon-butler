@@ -43,7 +43,7 @@ mcd-coupon-butler does one simple thing: **it hands "remember to claim it" over 
 | 🎁 **One-tap claiming** | Claim every currently available Maisheng coupon in a single call — no more tapping one by one | `available-coupons` `auto-bind-coupons` |
 | 🚨 **Expiry alerts** | Sort your wallet by expiry; anything within 3 days gets pinned to the top and flagged | `query-my-coupons` `now-time-info` |
 | 💎 **Points checkup** | Available / lifetime / frozen / expiring — all four at a glance | `query-my-account` |
-| 🎰 **Lottery butler** | Check the draw, see remaining chances, draw on your behalf, tally the winnings | `query-lottery-info` `draw-lottery` `query-my-prizes` |
+| 🎰 **Lottery butler** | Check the draw, see remaining chances, draw on your behalf **after you confirm**, tally the winnings | `query-lottery-info` `draw-lottery` `query-my-prizes` |
 | 💰 **Best redemption** | Ranked by value-per-point, so you know exactly what your points are worth | `mall-points-products` `mall-product-detail` |
 | 🍔 **Coupons for ordering** | See which coupons work at a given store and find the cheapest combo | `query-store-coupons` `calculate-price` |
 | 📡 **Campaign radar** | Read the monthly campaign calendar and surface what's **available today** — new items, collabs, limited drops | `campaign-calendar` `now-time-info` `query-meals` |
@@ -276,7 +276,8 @@ python3 scripts/mcd_wool.py badge
 
 - **No personal data is stored or uploaded.** Every call is a live request to the official McDonald's MCP service at `https://mcp.mcd.cn`. This project runs no backend and stores no data.
 - **Your token stays on your machine.** It is read from the `MCD_MCP_TOKEN` environment variable; if cached locally, it goes to `~/.mcd-coupon-butler/MCD_MCP_TOKEN` with `chmod 600`, and **only with your explicit consent**.
-- **Spending actions require confirmation.** The only action that consumes points is `mall-create-order`. It must restate what will be spent and received before it runs.
+- **Point-spending actions never run automatically (a hard gate).** `draw-lottery` (24 points per draw) and `mall-create-order` (points redemption) are **blocked in code** — they only run when you explicitly confirm and pass `--confirm`. `create-order` / `party-order-create` (real payments) are gated the same way. The only write action allowed to run unattended is `auto-bind-coupons` (claiming coupons — additive and free).
+- **The gate never fails silently.** When it triggers, it tells you exactly what would be spent and how much, then waits for your go-ahead. It will never spend your points on its own.
 - **Never commit your token.** Every config file in this repo uses environment-variable placeholders only.
 
 ---

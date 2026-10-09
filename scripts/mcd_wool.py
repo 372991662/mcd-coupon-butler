@@ -22,6 +22,11 @@ mcd-coupon-butler / 麦麦羊毛管家 —— 零依赖命令行工具
     python3 scripts/mcd_wool.py mall              # 麦麦商城商品列表
     python3 scripts/mcd_wool.py call <tool> '{...}'   # 直接调用任意 Tool
 
+⚠️ 资产保护：凡**消耗积分/金钱**的操作（draw-lottery 抽奖、mall-create-order
+   积分兑换、create-order / party-order-create 下单）默认一律被拦截、不会自动执行。
+   确认代价后需显式加 --confirm 才会放行：
+       python3 scripts/mcd_wool.py call mall-create-order '{...}' --confirm
+
 Token 读取优先级:
     1) --token 参数
     2) 环境变量 MCD_MCP_TOKEN
@@ -57,15 +62,55 @@ class McpError(RuntimeError):
     """MCP 调用或传输层错误。"""
 
 
+# ---------- 资产保护闸门（硬约束） ----------
+# 会**消耗用户资产**（积分 / 金钱）的工具：默认一律禁止调用。
+# 必须在用户明确确认后，显式追加 --confirm 才允许执行。
+# 注意：本清单是"默认拒绝"策略 —— 宁可不执行，也不能自动替用户花掉积分。
+GUARDED_TOOLS = {
+    "draw-lottery": "消耗积分抽奖（单次 24 积分，扣减后不可撤销）",
+    "mall-create-order": "消耗积分兑换商品（积分扣减后不可撤销）",
+    "create-order": "提交订单，将产生实际支付",
+    "party-order-create": "提交聚会订单，将产生实际支付",
+}
+
+# 不消耗任何资产、可安全自动执行的写操作（白名单）
+ALLOWED_WRITE_TOOLS = {
+    "auto-bind-coupons",  # 领券：只增不减，无成本
+}
+
+
+class GuardError(RuntimeError):
+    """命中资产保护闸门：该操作会消耗积分/金钱，未经确认不得执行。
+
+    刻意**不继承** McpError —— 因为 safe_call 会吞掉 McpError 并降级为普通错误，
+    而本闸门必须一路抛出到入口、给出明确提示与退出码。
+    """
+
+    def __init__(self, tool):
+        self.tool = tool
+        self.reason = GUARDED_TOOLS.get(tool, "可能消耗用户积分/金钱")
+        super().__init__(
+            "⛔ 已拦截【%s】：%s。\n"
+            "   本工具**不会自动执行**任何消耗积分的操作 —— 这是硬约束。\n"
+            "   如果你（用户）确实要执行，请先确认下面的代价，再显式加 --confirm：\n"
+            "\n"
+            "     确认代价：%s\n"
+            "     确认执行：python3 scripts/mcd_wool.py call %s '<参数>' --confirm\n"
+            % (tool, self.reason, self.reason, tool)
+        )
+
+
 class McdMcpClient:
     """麦当劳 MCP 的极简 Streamable HTTP 客户端（仅标准库）。"""
 
-    def __init__(self, url=DEFAULT_URL, token=None, timeout=30):
+    def __init__(self, url=DEFAULT_URL, token=None, timeout=30, allow_guarded=False):
         if not token:
             raise McpError("缺少 MCP Token，请设置环境变量 MCD_MCP_TOKEN 或使用 --token。")
         self.url = url.rstrip("/") or DEFAULT_URL
         self.token = token
         self.timeout = timeout
+        # allow_guarded 必须由用户显式确认（CLI --confirm）后才会置为 True
+        self.allow_guarded = allow_guarded
         self.session_id = None
         self._req_id = 0
         self._initialized = False
@@ -128,6 +173,9 @@ class McdMcpClient:
         return _result_of(resp).get("tools", [])
 
     def call_tool(self, name, arguments=None):
+        # 资产保护闸门：消耗积分/金钱的工具，未经显式确认一律拒绝
+        if name in GUARDED_TOOLS and not self.allow_guarded:
+            raise GuardError(name)
         self._ensure_ready()
         resp = self._post({
             "jsonrpc": "2.0",
@@ -1095,6 +1143,9 @@ def main(argv=None):
     parser.add_argument("--url", default=os.environ.get("MCD_MCP_URL", DEFAULT_URL), help="MCP 接入地址")
     parser.add_argument("--size", type=int, default=20, help="mall 命令返回的商品数量")
     parser.add_argument("--with-mall", action="store_true", help="report 命令附带商城商品")
+    parser.add_argument("--confirm", action="store_true",
+                        help="确认执行会消耗积分/金钱的操作（抽奖、积分兑换、下单）。"
+                             "不加此开关时，这类操作一律被拦截。")
     args = parser.parse_args(argv)
 
     token = resolve_token(args.token)
@@ -1109,8 +1160,13 @@ def main(argv=None):
         return 2
 
     try:
-        client = None if (offline and not token) else McdMcpClient(url=args.url, token=token)
+        client = None if (offline and not token) else McdMcpClient(
+            url=args.url, token=token, allow_guarded=args.confirm)
         return COMMANDS[args.command](client, args)
+    except GuardError as exc:
+        # 资产保护闸门：单独提示，退出码 3 便于自动化区分"被拦截"与"调用失败"
+        print(str(exc), file=sys.stderr)
+        return 3
     except McpError as exc:
         print("❌ %s" % exc, file=sys.stderr)
         return 1
