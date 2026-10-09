@@ -1,0 +1,23 @@
+# 环境变量与本地凭证，绝不提交
+.env
+.env.*
+*.local
+
+# 本地 Token 缓存
+MCD_MCP_TOKEN
+.mcd-coupon-butler/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
