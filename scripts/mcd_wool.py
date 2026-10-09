@@ -13,8 +13,9 @@ mcd-coupon-butler / 麦麦羊毛管家 —— 零依赖命令行工具
     python3 scripts/mcd_wool.py tools             # 打印工具清单
     python3 scripts/mcd_wool.py coupons           # 券包体检
     python3 scripts/mcd_wool.py points            # 积分体检
+    python3 scripts/mcd_wool.py campaign          # 麦麦活动雷达（上新/联名/限定）
     python3 scripts/mcd_wool.py bind              # 一键领取麦麦省全部券
-    python3 scripts/mcd_wool.py report            # 券包 + 积分 合并体检报告（Markdown）
+    python3 scripts/mcd_wool.py report            # 券包 + 积分 + 活动 合并体检报告（Markdown）
     python3 scripts/mcd_wool.py mall              # 麦麦商城商品列表
     python3 scripts/mcd_wool.py call <tool> '{...}'   # 直接调用任意 Tool
 
@@ -250,6 +251,38 @@ def fetch_account(client):
     return data, None
 
 
+def call_with_fallback(client, tool, arg_candidates):
+    """按候选参数依次尝试调用。
+
+    部分 Tool 的参数形态官方文档未完全固定（例如 activity 日历可能接受
+    {year, month}、{date:"YYYY-MM"} 或空参数），这里做一次温和的降级探测，
+    避免因参数猜错而整体失败。
+    """
+    last_err = "未提供可用参数"
+    for args in arg_candidates:
+        try:
+            return True, payload_of(client.call_tool(tool, args)), args
+        except McpError as exc:
+            last_err = str(exc)
+    return False, last_err, None
+
+
+def fetch_campaign(client, now_text):
+    """查询当月营销活动日历。"""
+    year = now_text[:4]
+    month = now_text[5:7]
+    candidates = [
+        {"year": as_int(year), "month": as_int(month)},
+        {"date": "%s-%s" % (year, month)},
+        {"year": year, "month": month},
+        {},
+    ]
+    ok, data, _used = call_with_fallback(client, "campaign-calendar", candidates)
+    if not ok:
+        return None, data
+    return data, None
+
+
 def _find_list(node, keys, depth=0):
     """在嵌套结构里找出最可能承载"券列表"的那个数组。"""
     if depth > 4 or node is None:
@@ -389,6 +422,137 @@ def render_points(account):
     return "\n".join(lines) + "\n"
 
 
+def _collect_dict_lists(node, depth=0, acc=None):
+    """把嵌套结构里所有"由字典组成的数组"都收集起来。
+
+    活动日历可能按「进行中 / 往期 / 未来」分组返回，因此不能只取第一个数组。
+    """
+    if acc is None:
+        acc = []
+    if depth > 5 or node is None:
+        return acc
+    if isinstance(node, list):
+        dict_items = [x for x in node if isinstance(x, dict)]
+        if dict_items:
+            acc.append(dict_items)
+        else:
+            for child in node:
+                _collect_dict_lists(child, depth + 1, acc)
+        return acc
+    if isinstance(node, dict):
+        for value in node.values():
+            _collect_dict_lists(value, depth + 1, acc)
+    return acc
+
+
+def _activity_of(item):
+    """从一条活动记录里抽出通用字段（字段名不确定，多候选尝试）。"""
+    name = pick(item, "activityName", "campaignName", "name", "title", "activityTitle", "subject")
+    desc = pick(item, "description", "desc", "summary", "activityDesc", "subTitle", "content", "remark")
+    start = parse_date(pick(item, "startTime", "startDate", "beginTime", "beginDate", "startAt", "start", "from"))
+    end = parse_date(pick(item, "endTime", "endDate", "finishTime", "expireTime", "endAt", "end", "to"))
+    status = pick(item, "status", "statusDesc", "state", "activityStatus", "campaignStatus")
+    return {
+        "name": name or "未命名活动",
+        "desc": desc or "-",
+        "start": start,
+        "end": end,
+        "status": status,
+    }
+
+
+def _classify(act, today):
+    """判断活动处于 进行中 / 即将开始 / 已结束。"""
+    text = str(act.get("status") or "")
+    if any(k in text for k in ("进行", "进行中", "上线", "在线", "ongoing", "active")):
+        return "ongoing"
+    if any(k in text for k in ("未开始", "即将", "预告", "upcoming", "soon")):
+        return "upcoming"
+    if any(k in text for k in ("结束", "已下线", "过期", "ended", "expired", "offline")):
+        return "ended"
+
+    start, end = act.get("start"), act.get("end")
+    if start and end:
+        if start <= today <= end:
+            return "ongoing"
+        return "upcoming" if start > today else "ended"
+    if end:
+        return "ended" if end < today else "ongoing"
+    if start:
+        return "upcoming" if start > today else "ongoing"
+    return "ongoing"
+
+
+def _span(act):
+    if act.get("start") and act.get("end"):
+        return "%s ~ %s" % (act["start"], act["end"])
+    return act.get("end") or act.get("start") or "-"
+
+
+def render_campaign(data, now_text):
+    today = now_text[:10]
+    if data is None:
+        return "> 未能获取活动日历。\n"
+    if isinstance(data, str):
+        return "```json\n%s\n```\n" % data
+
+    acts, seen = [], set()
+    for group in _collect_dict_lists(data):
+        for item in group:
+            act = _activity_of(item)
+            key = (act["name"], act.get("start"), act.get("end"))
+            if key in seen:
+                continue
+            seen.add(key)
+            act["stage"] = _classify(act, today)
+            acts.append(act)
+
+    if not acts:
+        return ("> 本月活动日历未返回可解析的数据。\n"
+                "> 可到麦当劳 App 首页或麦麦日历查看，或稍后重试。\n")
+
+    ongoing = [a for a in acts if a["stage"] == "ongoing"]
+    upcoming = sorted([a for a in acts if a["stage"] == "upcoming"],
+                      key=lambda a: a.get("start") or "9999")
+    ended = [a for a in acts if a["stage"] == "ended"]
+
+    lines = []
+    if ongoing:
+        lines.append("### 🔥 今天就能吃（进行中）")
+        lines.append("| 活动 | 内容 | 周期 | 状态 |")
+        lines.append("|---|---|---|---|")
+        for a in ongoing:
+            tag = "**进行中**"
+            if a.get("end"):
+                left = days_left(a["end"], today)
+                if left is not None:
+                    tag = "**进行中 · 剩 %d 天**" % left
+            lines.append("| %s | %s | %s | %s |" % (a["name"], a["desc"], _span(a), tag))
+        lines.append("")
+
+    if upcoming:
+        lines.append("### ⏰ 即将开始")
+        lines.append("| 活动 | 内容 | 开始日 | 还有 |")
+        lines.append("|---|---|---|---|")
+        for a in upcoming:
+            left = days_left(a["start"], today) if a.get("start") else None
+            lines.append("| %s | %s | %s | %s |" % (
+                a["name"], a["desc"], a["start"] or "-",
+                ("**%d 天**" % left) if left is not None else "-"))
+        lines.append("")
+
+    if ended:
+        lines.append("<details><summary>已结束的活动（%d 个）</summary>\n" % len(ended))
+        for a in ended:
+            lines.append("- %s（%s）" % (a["name"], _span(a)))
+        lines.append("\n</details>\n")
+
+    if not (ongoing or upcoming):
+        lines.append("> 当前没有进行中或即将开始的活动。\n")
+
+    return "\n".join(lines) + "\n"
+
+
 # ---------- 命令 ----------
 
 
@@ -428,6 +592,16 @@ def cmd_points(client, _args):
     return 0
 
 
+def cmd_campaign(client, _args):
+    now = fetch_now(client)
+    data, err = fetch_campaign(client, now)
+    print("## 📡 麦麦活动雷达 · %s\n" % now[:10])
+    if err:
+        print("> ⚠️ %s\n" % err)
+    print(render_campaign(data, now))
+    return 0
+
+
 def cmd_bind(client, _args):
     ok, data = safe_call(client, "auto-bind-coupons")
     if not ok:
@@ -452,6 +626,7 @@ def cmd_report(client, args):
     now = fetch_now(client)
     coupons, c_err = fetch_coupons(client)
     account, p_err = fetch_account(client)
+    campaign, a_err = fetch_campaign(client, now)
 
     print("## 🍟 麦麦羊毛体检报告 · %s\n" % now[:10])
     print("### 一、券包\n")
@@ -462,9 +637,13 @@ def cmd_report(client, args):
     if p_err:
         print("> ⚠️ %s\n" % p_err)
     print(render_points(account))
+    print("### 三、麦麦活动雷达\n")
+    if a_err:
+        print("> ⚠️ %s\n" % a_err)
+    print(render_campaign(campaign, now))
 
     if args.with_mall:
-        print("### 三、麦麦商城\n")
+        print("### 四、麦麦商城\n")
         ok, data = safe_call(client, "mall-points-products", {"pageIndex": 1, "pageSize": 20})
         print("```json\n%s\n```\n" % json.dumps(data, ensure_ascii=False, indent=2) if ok else "> ⚠️ %s\n" % data)
     return 0
@@ -490,6 +669,7 @@ COMMANDS = {
     "tools": cmd_tools,
     "coupons": cmd_coupons,
     "points": cmd_points,
+    "campaign": cmd_campaign,
     "bind": cmd_bind,
     "mall": cmd_mall,
     "report": cmd_report,
