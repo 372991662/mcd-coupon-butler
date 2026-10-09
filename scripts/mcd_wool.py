@@ -14,8 +14,9 @@ mcd-coupon-butler / 麦麦羊毛管家 —— 零依赖命令行工具
     python3 scripts/mcd_wool.py coupons           # 券包体检
     python3 scripts/mcd_wool.py points            # 积分体检
     python3 scripts/mcd_wool.py campaign          # 麦麦活动雷达（上新/联名/限定）
+    python3 scripts/mcd_wool.py badge             # 24节气徽章日历（无需 Token，纯本地推算）
     python3 scripts/mcd_wool.py bind              # 一键领取麦麦省全部券
-    python3 scripts/mcd_wool.py report            # 券包 + 积分 + 活动 合并体检报告（Markdown）
+    python3 scripts/mcd_wool.py report            # 券包 + 积分 + 活动 + 徽章 合并体检报告
     python3 scripts/mcd_wool.py mall              # 麦麦商城商品列表
     python3 scripts/mcd_wool.py call <tool> '{...}'   # 直接调用任意 Tool
 
@@ -31,7 +32,15 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
+
+# 节气徽章模块与本文件同目录；用脚本方式运行时 sys.path[0] 即为该目录
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from solar_terms import BADGE_RULES, badge_windows, current_badge
+except ImportError:  # 理论上不会发生，兜底避免整体不可用
+    badge_windows = current_badge = None
+    BADGE_RULES = []
 
 DEFAULT_URL = "https://mcp.mcd.cn"
 TOKEN_FILE = os.path.expanduser("~/.mcd-coupon-butler/MCD_MCP_TOKEN")
@@ -422,6 +431,67 @@ def render_points(account):
     return "\n".join(lines) + "\n"
 
 
+def render_badge(now_text, compact=False):
+    """渲染「麦麦24节气」徽章日历。
+
+    注意：麦当劳 MCP 未提供徽章查询接口，因此本模块**只推算领取时间窗口**，
+    不声称能读出用户"已收集了哪些徽章"。收集进度仍需到麦当劳 App 徽章墙查看。
+    """
+    if current_badge is None:
+        return "> 节气模块不可用。\n"
+
+    today = date(*[int(x) for x in now_text[:10].split("-")])
+    cur, nxt = current_badge(today)
+
+    lines = []
+    if cur:
+        passed = (today - cur["start"]).days
+        left = (cur["end"] - today).days
+        lines.append("### 🏅 当前可领：**%s** 徽章" % cur["name"])
+        lines.append("")
+        lines.append("| 项目 | 内容 |")
+        lines.append("|---|---|")
+        lines.append("| 领取窗口 | %s ~ %s |" % (cur["start"], cur["end"]))
+        lines.append("| 进度 | 已进行 %d 天 · **还剩 %d 天** |" % (passed, left))
+        lines.append("| 领取条件 | %s |" % " → ".join(BADGE_RULES))
+        lines.append("")
+        if left <= 2:
+            lines.append("> 🚨 **快到期了**，今天不下单这枚徽章就错过了。\n")
+    else:
+        lines.append("> 今天不在任何节气徽章窗口内（理论上不会发生，请检查日期）。\n")
+
+    if nxt and not compact:
+        start_in = (nxt["start"] - today).days
+        lines.append("### ⏰ 下一个：%s 徽章" % nxt["name"])
+        lines.append("")
+        lines.append("窗口 %s ~ %s · 还有 **%d 天**开始" % (nxt["start"], nxt["end"], start_in))
+        lines.append("")
+
+    if not compact:
+        lines.append("### 📅 %d 全年节气徽章日历" % today.year)
+        lines.append("")
+        lines.append("| 节气 | 领取窗口 | 天数 | 状态 |")
+        lines.append("|---|---|---:|---|")
+        for w in badge_windows(today.year):
+            span = (w["end"] - w["start"]).days + 1
+            if w["end"] < today:
+                stage = "已结束"
+            elif w["start"] > today:
+                stage = "未开始"
+            else:
+                stage = "**🔥 进行中**"
+            tail = "（跨年）" if w["cross_year"] else ""
+            lines.append("| %s | %s ~ %s%s | %d | %s |" % (w["name"], w["start"], w["end"], tail, span, stage))
+        lines.append("")
+        lines.append("> ℹ️ 同系列另有两项机制：每周六 App【大抽奖】消耗 **24 积分**抽节气大奖；"
+                     "限定期间 **100 积分**兑麦麦美食。")
+        lines.append("> ℹ️ 麦当劳 MCP 暂无徽章查询接口，本表为**时间窗口推算**；"
+                     "已收集哪些徽章请到麦当劳 App 徽章墙查看，具体以活动页说明为准。")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def _collect_dict_lists(node, depth=0, acc=None):
     """把嵌套结构里所有"由字典组成的数组"都收集起来。
 
@@ -602,6 +672,14 @@ def cmd_campaign(client, _args):
     return 0
 
 
+def cmd_badge(client, _args):
+    """节气徽章日历。优先用 MCP 的 now-time-info 取当前时间，失败则退回本机时间。"""
+    now = fetch_now(client) if client else datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
+    print("## 🏅 麦麦24节气徽章日历 · %s\n" % now[:10])
+    print(render_badge(now))
+    return 0
+
+
 def cmd_bind(client, _args):
     ok, data = safe_call(client, "auto-bind-coupons")
     if not ok:
@@ -642,8 +720,11 @@ def cmd_report(client, args):
         print("> ⚠️ %s\n" % a_err)
     print(render_campaign(campaign, now))
 
+    print("### 四、节气徽章\n")
+    print(render_badge(now, compact=True))
+
     if args.with_mall:
-        print("### 四、麦麦商城\n")
+        print("### 五、麦麦商城\n")
         ok, data = safe_call(client, "mall-points-products", {"pageIndex": 1, "pageSize": 20})
         print("```json\n%s\n```\n" % json.dumps(data, ensure_ascii=False, indent=2) if ok else "> ⚠️ %s\n" % data)
     return 0
@@ -670,11 +751,15 @@ COMMANDS = {
     "coupons": cmd_coupons,
     "points": cmd_points,
     "campaign": cmd_campaign,
+    "badge": cmd_badge,
     "bind": cmd_bind,
     "mall": cmd_mall,
     "report": cmd_report,
     "call": cmd_call,
 }
+
+# 无需 MCP Token 即可运行的命令（纯本地计算）
+OFFLINE_COMMANDS = {"badge"}
 
 
 def resolve_token(cli_token=None):
@@ -707,15 +792,18 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     token = resolve_token(args.token)
-    if not token:
+    # 节气徽章是纯本地推算，不需要 MCP Token 也能跑
+    offline = args.command in OFFLINE_COMMANDS
+    if not token and not offline:
         print("❌ 未找到 MCP Token。\n"
               "   1) 访问 https://open.mcd.cn/mcp 登录并申请 Token\n"
               "   2) export MCD_MCP_TOKEN=\"你的Token\"\n"
-              "   3) 或写入 %s" % TOKEN_FILE, file=sys.stderr)
+              "   3) 或写入 %s\n"
+              "   （只有 badge 命令可以不带 Token 离线运行）" % TOKEN_FILE, file=sys.stderr)
         return 2
 
     try:
-        client = McdMcpClient(url=args.url, token=token)
+        client = None if (offline and not token) else McdMcpClient(url=args.url, token=token)
         return COMMANDS[args.command](client, args)
     except McpError as exc:
         print("❌ %s" % exc, file=sys.stderr)
