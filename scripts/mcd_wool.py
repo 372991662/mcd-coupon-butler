@@ -12,11 +12,13 @@ mcd-coupon-butler / 麦麦羊毛管家 —— 零依赖命令行工具
     python3 scripts/mcd_wool.py doctor            # 连通性自检 + 列出可用工具
     python3 scripts/mcd_wool.py tools             # 打印工具清单
     python3 scripts/mcd_wool.py coupons           # 券包体检
+    python3 scripts/mcd_wool.py available         # 可领取的麦麦省优惠券
     python3 scripts/mcd_wool.py points            # 积分体检
+    python3 scripts/mcd_wool.py lottery           # 积分抽奖信息 + 奖池
     python3 scripts/mcd_wool.py campaign          # 麦麦活动雷达（上新/联名/限定）
     python3 scripts/mcd_wool.py badge             # 24节气徽章日历（无需 Token，纯本地推算）
     python3 scripts/mcd_wool.py bind              # 一键领取麦麦省全部券
-    python3 scripts/mcd_wool.py report            # 券包 + 积分 + 活动 + 徽章 合并体检报告
+    python3 scripts/mcd_wool.py report            # 券包+积分+活动+徽章+抽奖 合并体检报告
     python3 scripts/mcd_wool.py mall              # 麦麦商城商品列表
     python3 scripts/mcd_wool.py call <tool> '{...}'   # 直接调用任意 Tool
 
@@ -29,6 +31,7 @@ Token 读取优先级:
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -312,6 +315,18 @@ def _find_list(node, keys, depth=0):
 # ---------- 字段读取（防御式，字段名缺失就返回 None） ----------
 
 
+def unwrap(payload):
+    """剥离麦当劳 MCP 的统一信封 {success, code, message, traceId, data}。
+
+    绝大多数 Tool 把真正的业务数据放在 `data` 里；少数（如 available-coupons）
+    `data` 本身就是数组。没有信封时原样返回，避免误伤。
+    """
+    if isinstance(payload, dict) and "data" in payload:
+        if any(k in payload for k in ("success", "code", "traceId", "message", "datetime")):
+            return payload["data"]
+    return payload
+
+
 def pick(node, *names):
     if not isinstance(node, dict):
         return None
@@ -364,6 +379,57 @@ def days_left(expiry, now_text):
 # ---------- 渲染 ----------
 
 
+_ORDER_TYPE_TEXT = {1: "到店", 2: "外送"}
+
+
+def _coupon_channel(c):
+    """从 tags / instructions / orderTypes 里拼出「到店 / 外送」渠道标签。"""
+    labels = []
+    for t in (c.get("tags") or []):
+        if isinstance(t, dict) and t.get("label"):
+            labels.append(str(t["label"]))
+    for t in ((c.get("instructions") or {}).get("labels") or []):
+        if isinstance(t, dict) and t.get("text"):
+            labels.append(str(t["text"]))
+    if not labels:
+        ots = c.get("orderTypes")
+        if not isinstance(ots, list):
+            ots = [c.get("orderType")] if c.get("orderType") else []
+        labels = [_ORDER_TYPE_TEXT[x] for x in ots if x in _ORDER_TYPE_TEXT]
+    return "/".join(dict.fromkeys(labels)) or "-"
+
+
+def _coupon_value(c, name=None):
+    """券的权益文案：优先面额（分→元），退化到现成文案。
+
+    麦当劳很多券的 subtitle 与 title 完全一致（等于没给信息），
+    此时展示 denomination 换算出的面额更有用。
+    """
+    cents = as_int(pick(c, "denomination", "tenderAmount"))
+    if cents:
+        return "¥%.2f" % (cents / 100.0)
+    for key in ("reducePriceText", "discountDesc", "subtitle", "subTitle",
+                "couponDesc", "description", "benefit"):
+        text = c.get(key)
+        if text and str(text).strip() and str(text).strip() != name:
+            return str(text).strip()
+    return "-"
+
+
+def _coupon_row(c, now_text):
+    name = pick(c, "title", "couponName", "name", "couponTitle") or "未命名券"
+    expiry = parse_date(pick(c, "tradeEndDateTime", "tradeEndDate", "expireTime", "expireDate",
+                             "endTime", "validEndTime", "endDate", "expireAt"))
+    return {
+        "name": name,
+        "value": _coupon_value(c, name),
+        "channel": _coupon_channel(c),
+        "status": pick(c, "couponStatus", "label"),
+        "expiry": expiry or "-",
+        "left": days_left(expiry, now_text) if expiry else None,
+    }
+
+
 def render_coupons(coupons, now_text, limit=40):
     lines = []
     if coupons is None:
@@ -371,34 +437,45 @@ def render_coupons(coupons, now_text, limit=40):
     if not coupons:
         return "> 当前券包是空的，先去「一键领券」薅一波吧。\n"
 
-    rows = []
-    for c in coupons:
-        expiry = parse_date(pick(c, "expireTime", "expireDate", "endTime", "validEndTime", "endDate", "expireAt"))
-        rows.append({
-            "name": pick(c, "couponName", "name", "title", "couponTitle") or "未命名券",
-            "value": pick(c, "discountDesc", "couponDesc", "description", "subTitle", "benefit") or "-",
-            "expiry": expiry or "-",
-            "left": days_left(expiry, now_text) if expiry else None,
-        })
+    rows = [_coupon_row(c, now_text) for c in coupons if isinstance(c, dict)]
+    if not rows:
+        return "> 券列表返回了数据，但结构无法识别。\n"
 
+    # 「可领券」列表（available-coupons）结构更简单：无到期日、无渠道，
+    # 只关心「能不能领」，此时渲染成紧凑清单比空表格更清楚。
+    if all(r["expiry"] == "-" and r["channel"] == "-" for r in rows):
+        lines.append("| 券名 | 状态 |")
+        lines.append("|---|---|")
+        for r in rows[:limit]:
+            status = r["status"] or "-"
+            mark = "✅" if str(status) in ("可领取", "CAN_GET") else status
+            lines.append("| %s | %s |" % (r["name"], mark))
+        if len(rows) > limit:
+            lines.append("\n> 仅展示前 %d 张，共 %d 张。" % (limit, len(rows)))
+        lines.append("\n> 💡 用 `bind` 命令可以把这些券一次性全领到券包里。")
+        return "\n".join(lines) + "\n"
+
+    # 有到期日的按剩余天数升序；无到期日的排最后，但仍参与展示
     rows.sort(key=lambda r: (r["left"] is None, r["left"] if r["left"] is not None else 0))
 
     urgent = [r for r in rows if r["left"] is not None and r["left"] <= 3]
     if urgent:
         lines.append("### 🚨 临期告急（≤3 天）")
-        lines.append("| 券名 | 权益 | 到期日 | 剩余 |")
-        lines.append("|---|---|---|---|")
+        lines.append("| 券名 | 权益 | 渠道 | 到期日 | 剩余 |")
+        lines.append("|---|---|---|---|---|")
         for r in urgent:
             left = "今天到期" if r["left"] == 0 else "%d 天" % r["left"]
-            lines.append("| %s | %s | %s | **%s** |" % (r["name"], r["value"], r["expiry"], left))
+            lines.append("| %s | %s | %s | %s | **%s** |" % (
+                r["name"], r["value"], r["channel"], r["expiry"], left))
         lines.append("")
 
-    lines.append("### 📅 有效券（按到期排序）")
-    lines.append("| 券名 | 权益 | 到期日 | 剩余 |")
-    lines.append("|---|---|---|---|")
+    lines.append("### 📅 券包明细（按到期排序）")
+    lines.append("| 券名 | 权益 | 渠道 | 到期日 | 剩余 |")
+    lines.append("|---|---|---|---|---|")
     for r in rows[:limit]:
         left = "-" if r["left"] is None else ("今天到期" if r["left"] == 0 else "%d 天" % r["left"])
-        lines.append("| %s | %s | %s | %s |" % (r["name"], r["value"], r["expiry"], left))
+        lines.append("| %s | %s | %s | %s | %s |" % (
+            r["name"], r["value"], r["channel"], r["expiry"], left))
     if len(rows) > limit:
         lines.append("\n> 仅展示前 %d 张，共 %d 张。" % (limit, len(rows)))
     return "\n".join(lines) + "\n"
@@ -410,24 +487,40 @@ def render_points(account):
     if isinstance(account, str):
         return "```json\n%s\n```\n" % account
 
-    available = as_int(pick(account, "availablePoints", "usablePoints", "points", "availableScore", "score"))
-    total = as_int(pick(account, "totalPoints", "accumulatePoints", "totalScore"))
-    frozen = as_int(pick(account, "frozenPoints", "freezePoints", "frozenScore"))
-    expiring = as_int(pick(account, "expiringPoints", "expirePoints", "expiringScore", "willExpirePoints"))
-
-    if all(v is None for v in (available, total, frozen, expiring)):
+    body = unwrap(account)
+    if not isinstance(body, dict):
         return "```json\n%s\n```\n" % json.dumps(account, ensure_ascii=False, indent=2)
 
-    def fmt(v):
-        return "未返回" if v is None else "%d 积分" % v
+    # 真实字段来自 query-my-account：availablePoint / accumulativePoint /
+    # expiredPoint / usedPoint / currentMouthExpirePoint / nextMouthExpirePoint / frozenPoint
+    available = as_int(pick(body, "availablePoint", "availablePoints", "usablePoints", "points", "score"))
+    total = as_int(pick(body, "accumulativePoint", "accumulatePoints", "totalPoints", "totalScore"))
+    frozen = as_int(pick(body, "frozenPoint", "frozenPoints", "freezePoints", "frozenScore"))
+    used = as_int(pick(body, "usedPoint", "usedPoints", "usedScore"))
+    expired = as_int(pick(body, "expiredPoint", "expiredPoints", "expiredScore"))
+    this_month = as_int(pick(body, "currentMouthExpirePoint", "currentMonthExpirePoint"))
+    next_month = as_int(pick(body, "nextMouthExpirePoint", "nextMonthExpirePoint"))
+
+    if all(v is None for v in (available, total, frozen, used, expired, this_month, next_month)):
+        return "```json\n%s\n```\n" % json.dumps(account, ensure_ascii=False, indent=2)
+
+    def fmt(v, suffix=" 积分"):
+        return "未返回" if v is None else ("%g%s" % (v, suffix) if isinstance(v, float) else "%d%s" % (v, suffix))
 
     lines = ["| 项目 | 数值 |", "|---|---|",
              "| 可用积分 | **%s** |" % fmt(available),
-             "| 即将过期 | %s |" % fmt(expiring),
-             "| 冻结积分 | %s |" % fmt(frozen),
-             "| 累计积分 | %s |" % fmt(total)]
-    if expiring:
-        lines.append("\n> ⚠️ 有 %d 积分即将过期，建议尽快兑换或抽奖消化。" % expiring)
+             "| 累计获得 | %s |" % fmt(total),
+             "| 本月将过期 | %s |" % fmt(this_month),
+             "| 下月将过期 | %s |" % fmt(next_month),
+             "| 冻结中 | %s |" % fmt(frozen),
+             "| 已使用 | %s |" % fmt(used),
+             "| 已过期作废 | %s |" % fmt(expired)]
+
+    warn = (this_month or 0) + (next_month or 0)
+    if warn:
+        lines.append("\n> ⚠️ 共 %d 积分即将过期，建议尽快到「积分抽奖」或「麦麦商城」消化。" % warn)
+    if expired:
+        lines.append("\n> 📉 已累计有 %d 积分作废 —— 这正是本工具想帮你避免的部分。" % expired)
     return "\n".join(lines) + "\n"
 
 
@@ -559,6 +652,71 @@ def _span(act):
     return act.get("end") or act.get("start") or "-"
 
 
+def _event_of(event):
+    """从 campaign-calendar 的一条 event 抽出展示信息。
+
+    真实结构：event.articleDto.{title,content,highlights} 承载文案，
+    event.activityTitle / activitySubTitle 常为空串，需以 articleDto 为主。
+    """
+    ad = event.get("articleDto") if isinstance(event.get("articleDto"), dict) else {}
+    name = (ad.get("title") or event.get("activityTitle") or event.get("activitySubTitle") or "").strip()
+    highlight = (ad.get("highlights") or "").strip()
+    content = (ad.get("content") or event.get("activitySubTitle") or "").strip()
+    desc = highlight or content or "-"
+    desc = re.sub(r"\s+", " ", desc)
+    if len(desc) > 60:
+        desc = desc[:58] + "…"
+    return {
+        "name": name or "未命名活动",
+        "desc": desc,
+        "price": event.get("price") if str(event.get("price") or "0") not in ("0", "") else None,
+        "price_suffix": event.get("priceSuffix") or "",
+        "tag": (event.get("activityTag") or "").strip(),
+        "jump": ad.get("appJumpUrl") or "",
+        "code": event.get("activityCode") or "",
+    }
+
+
+def _campaign_from_daily(body, today):
+    """按 dailyList（按日期分组，带 today 标记）分组。
+
+    注意：activityStage 的语义并不可靠（今天的活动同样是 stage=3），
+    因此一律以「日期与今天比较 + today 标记」作为分组依据。
+    """
+    daily = body.get("dailyList") if isinstance(body, dict) else None
+    if not isinstance(daily, list):
+        return None
+
+    groups = {"today": [], "upcoming": [], "past": []}
+    for day in daily:
+        if not isinstance(day, dict):
+            continue
+        d = parse_date(day.get("date")) or str(day.get("date") or "")
+        if day.get("today") or d == today:
+            stage = "today"
+        elif d and d > today:
+            stage = "upcoming"
+        else:
+            stage = "past"
+        for event in (day.get("events") or []):
+            if not isinstance(event, dict):
+                continue
+            item = _event_of(event)
+            item["date"] = d
+            groups[stage].append(item)
+
+    # 同一活动可能在多天重复出现（跨天活动），按名称去重并保留最早日期
+    for key in groups:
+        seen, deduped = set(), []
+        for item in sorted(groups[key], key=lambda x: x["date"] or "9999"):
+            if item["name"] in seen:
+                continue
+            seen.add(item["name"])
+            deduped.append(item)
+        groups[key] = deduped
+    return groups
+
+
 def render_campaign(data, now_text):
     today = now_text[:10]
     if data is None:
@@ -566,60 +724,156 @@ def render_campaign(data, now_text):
     if isinstance(data, str):
         return "```json\n%s\n```\n" % data
 
-    acts, seen = [], set()
-    for group in _collect_dict_lists(data):
-        for item in group:
-            act = _activity_of(item)
-            key = (act["name"], act.get("start"), act.get("end"))
-            if key in seen:
-                continue
-            seen.add(key)
-            act["stage"] = _classify(act, today)
-            acts.append(act)
+    body = unwrap(data)
+    groups = _campaign_from_daily(body, today)
 
-    if not acts:
+    if groups is None:
+        # 非预期结构时的降级路径：沿用旧的通用解析
+        acts, seen = [], set()
+        for group in _collect_dict_lists(body if body is not None else data):
+            for item in group:
+                act = _activity_of(item)
+                key = (act["name"], act.get("start"), act.get("end"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                act["stage"] = _classify(act, today)
+                acts.append(act)
+        groups = {
+            "today": [a for a in acts if a["stage"] == "ongoing"],
+            "upcoming": sorted([a for a in acts if a["stage"] == "upcoming"],
+                               key=lambda a: a.get("start") or "9999"),
+            "past": [a for a in acts if a["stage"] == "ended"],
+        }
+
+    ongoing, upcoming, past = groups["today"], groups["upcoming"], groups["past"]
+    if not (ongoing or upcoming or past):
         return ("> 本月活动日历未返回可解析的数据。\n"
                 "> 可到麦当劳 App 首页或麦麦日历查看，或稍后重试。\n")
 
-    ongoing = [a for a in acts if a["stage"] == "ongoing"]
-    upcoming = sorted([a for a in acts if a["stage"] == "upcoming"],
-                      key=lambda a: a.get("start") or "9999")
-    ended = [a for a in acts if a["stage"] == "ended"]
-
     lines = []
     if ongoing:
-        lines.append("### 🔥 今天就能吃（进行中）")
-        lines.append("| 活动 | 内容 | 周期 | 状态 |")
-        lines.append("|---|---|---|---|")
+        lines.append("### 🔥 今天就能吃（%d 个）" % len(ongoing))
+        lines.append("| 活动 | 亮点 | 起价 |")
+        lines.append("|---|---|---|")
         for a in ongoing:
-            tag = "**进行中**"
-            if a.get("end"):
-                left = days_left(a["end"], today)
-                if left is not None:
-                    tag = "**进行中 · 剩 %d 天**" % left
-            lines.append("| %s | %s | %s | %s |" % (a["name"], a["desc"], _span(a), tag))
+            price = ("¥%s%s" % (a["price"], a["price_suffix"])) if a.get("price") else "-"
+            lines.append("| **%s**%s | %s | %s |" % (
+                a["name"], (" `%s`" % a["tag"]) if a.get("tag") else "", a["desc"], price))
         lines.append("")
 
     if upcoming:
-        lines.append("### ⏰ 即将开始")
-        lines.append("| 活动 | 内容 | 开始日 | 还有 |")
+        lines.append("### ⏰ 后续档期（%d 个）" % len(upcoming))
+        lines.append("| 日期 | 活动 | 亮点 | 还有 |")
         lines.append("|---|---|---|---|")
         for a in upcoming:
-            left = days_left(a["start"], today) if a.get("start") else None
+            left = days_left(a["date"], today) if a.get("date") else None
             lines.append("| %s | %s | %s | %s |" % (
-                a["name"], a["desc"], a["start"] or "-",
+                a["date"] or "-", a["name"], a["desc"],
                 ("**%d 天**" % left) if left is not None else "-"))
         lines.append("")
 
-    if ended:
-        lines.append("<details><summary>已结束的活动（%d 个）</summary>\n" % len(ended))
-        for a in ended:
-            lines.append("- %s（%s）" % (a["name"], _span(a)))
+    if past:
+        lines.append("<details><summary>往期回顾（%d 个）</summary>\n" % len(past))
+        for a in sorted(past, key=lambda x: x["date"], reverse=True):
+            lines.append("- %s（%s）" % (a["name"], a["date"] or "-"))
         lines.append("\n</details>\n")
 
-    if not (ongoing or upcoming):
-        lines.append("> 当前没有进行中或即将开始的活动。\n")
+    lines.append("> ℹ️ 活动日历反映的是**营销档期**，不代表门店当前库存；"
+                 "具体是否可售请以麦当劳 App 内门店页为准。")
+    return "\n".join(lines) + "\n"
 
+
+def render_mall(data, limit=20):
+    """渲染麦麦商城（积分兑换）商品列表，标出所需积分与价格。"""
+    if data is None:
+        return "> 未能获取商城商品。\n"
+    if isinstance(data, str):
+        return "```json\n%s\n```\n" % data
+
+    body = unwrap(data)
+    items = body if isinstance(body, list) else (body.get("list") if isinstance(body, dict) else None)
+    if not isinstance(items, list):
+        return "```json\n%s\n```\n" % json.dumps(data, ensure_ascii=False, indent=2)
+
+    rows = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        point = as_int(pick(it, "point", "points", "needPoint", "exchangePoint")) or 0
+        price = pick(it, "price")
+        rows.append({
+            "name": pick(it, "spuName", "name", "title") or "未命名商品",
+            "cat": pick(it, "catName", "category", "type") or "-",
+            "point": point,
+            "price": ("¥%s" % price) if price not in (None, "", "0") else "-",
+            "desc": re.sub(r"\s+", " ", str(pick(it, "selling", "desc", "description") or "-"))[:40],
+        })
+    if not rows:
+        return "> 商城返回了数据，但没有可兑换商品。\n"
+
+    # 能纯积分兑换的（point>0）优先，其次按所需积分升序
+    rows.sort(key=lambda r: (r["point"] == 0, r["point"]))
+
+    lines = ["| 商品 | 分类 | 所需积分 | 价格 | 说明 |", "|---|---|---:|---|---|"]
+    for r in rows[:limit]:
+        pt = "**%d**" % r["point"] if r["point"] else "现金"
+        lines.append("| %s | %s | %s | %s | %s |" % (r["name"], r["cat"], pt, r["price"], r["desc"]))
+    if len(rows) > limit:
+        lines.append("\n> 仅展示前 %d 个，共 %d 个。" % (limit, len(rows)))
+    return "\n".join(lines) + "\n"
+
+
+def render_lottery(data, now_text):
+    """渲染积分抽奖信息：消耗规则、剩余次数、奖品池。"""
+    if data is None:
+        return "> 未能获取抽奖信息。\n"
+    if isinstance(data, str):
+        return "```json\n%s\n```\n" % data
+
+    body = unwrap(data)
+    if not isinstance(body, dict):
+        return "```json\n%s\n```\n" % json.dumps(data, ensure_ascii=False, indent=2)
+
+    name = pick(body, "activityName", "name") or "积分抽奖"
+    status = pick(body, "activityStatusText", "statusText") or "-"
+    cost = as_int(pick(body, "drawPoint", "costPoint", "singleCost"))
+    available = as_int(pick(body, "availablePoint", "availablePoints"))
+    begin = parse_date(pick(body, "beginTime", "startTime"))
+    end = parse_date(pick(body, "endTime", "finishTime"))
+    decision = body.get("drawDecision") if isinstance(body.get("drawDecision"), dict) else {}
+    eligible = decision.get("resourceEligible")
+    next_cost = as_int((decision.get("nextConsumption") or {}).get("points"))
+
+    lines = ["| 项目 | 内容 |", "|---|---|",
+             "| 活动 | %s |" % name,
+             "| 状态 | **%s** |" % status,
+             "| 单次消耗 | %s |" % (("**%d 积分**" % cost) if cost else "未返回"),
+             "| 我的可用积分 | %s |" % (("**%d**" % available) if available is not None else "未返回"),
+             "| 活动周期 | %s ~ %s |" % (begin or "-", end or "-")]
+    if eligible is not None:
+        lines.append("| 是否可抽 | %s |" % ("✅ 可以" if eligible else "❌ 不可抽（积分不足或次数用尽）"))
+
+    can_draw = None
+    if cost and available is not None:
+        can_draw = available // cost if cost else None
+    if can_draw is not None:
+        lines.append("| 大约还能抽 | **%d 次** |" % can_draw)
+
+    prizes = body.get("prizes") if isinstance(body.get("prizes"), list) else []
+    if prizes:
+        lines.append("")
+        lines.append("### 🎁 奖池")
+        lines.append("| 奖品 | 类型 |")
+        lines.append("|---|---|")
+        for p in prizes[:15]:
+            if isinstance(p, dict):
+                lines.append("| %s | %s |" % (p.get("name") or "-", p.get("typeText") or "-"))
+
+    if can_draw is not None and can_draw == 0:
+        lines.append("\n> ⚠️ 当前积分不足以抽一次，先攒积分或换券。")
+    if next_cost and cost and next_cost != cost:
+        lines.append("\n> ℹ️ 下一次将消耗 %d 积分（服务端规则可能随进度变化）。" % next_cost)
     return "\n".join(lines) + "\n"
 
 
@@ -696,7 +950,30 @@ def cmd_mall(client, args):
     if not ok:
         print("⚠️ 获取失败：%s" % data, file=sys.stderr)
         return 1
-    print("```json\n%s\n```" % json.dumps(data, ensure_ascii=False, indent=2))
+    print("## 🛍️ 麦麦商城 · 可兑换商品\n")
+    print(render_mall(data, limit=args.size))
+    return 0
+
+
+def cmd_lottery(client, _args):
+    now = fetch_now(client)
+    ok, data = safe_call(client, "query-lottery-info")
+    print("## 🎰 积分抽奖 · %s\n" % now[:10])
+    if not ok:
+        print("> ⚠️ %s\n" % data)
+        return 1
+    print(render_lottery(data, now))
+    return 0
+
+
+def cmd_available(client, args):
+    """查看当前「可领取」的麦麦省优惠券（未领取前）。"""
+    ok, data = safe_call(client, "available-coupons")
+    if not ok:
+        print("⚠️ 获取失败：%s" % data, file=sys.stderr)
+        return 1
+    print("## 🎁 可领取的麦麦省优惠券\n")
+    print(render_coupons(unwrap(data), "", limit=args.size))
     return 0
 
 
@@ -723,10 +1000,14 @@ def cmd_report(client, args):
     print("### 四、节气徽章\n")
     print(render_badge(now, compact=True))
 
+    print("### 五、积分抽奖\n")
+    ok, lot = safe_call(client, "query-lottery-info")
+    print(render_lottery(lot, now) if ok else "> ⚠️ %s\n" % lot)
+
     if args.with_mall:
-        print("### 五、麦麦商城\n")
+        print("### 六、麦麦商城\n")
         ok, data = safe_call(client, "mall-points-products", {"pageIndex": 1, "pageSize": 20})
-        print("```json\n%s\n```\n" % json.dumps(data, ensure_ascii=False, indent=2) if ok else "> ⚠️ %s\n" % data)
+        print(render_mall(data, limit=20) if ok else "> ⚠️ %s\n" % data)
     return 0
 
 
@@ -749,7 +1030,9 @@ COMMANDS = {
     "doctor": cmd_doctor,
     "tools": cmd_tools,
     "coupons": cmd_coupons,
+    "available": cmd_available,
     "points": cmd_points,
+    "lottery": cmd_lottery,
     "campaign": cmd_campaign,
     "badge": cmd_badge,
     "bind": cmd_bind,

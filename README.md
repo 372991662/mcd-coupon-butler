@@ -7,6 +7,11 @@
 [![Skill](https://img.shields.io/badge/WorkBuddy-Skill-blue)](https://www.workbuddy.cn/)
 [![Python](https://img.shields.io/badge/Python-3.8%2B%20零依赖-green)](scripts/mcd_wool.py)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
+[![Verified](https://img.shields.io/badge/MCP-真实调用已实测-brightgreen)](MCP_INTEGRATION.md#六实测记录)
+
+> ✅ **真实调用实测通过**：本项目已在 `mcp.mcd.cn` 真实服务上用真实会员 Token 跑通
+> 全部核心流程（连通性 / 领券 / 券包 / 积分 / 抽奖 / 活动雷达 / 商城），
+> 详见 [`MCP_INTEGRATION.md` 实测记录](MCP_INTEGRATION.md#六实测记录)。
 
 ---
 
@@ -141,22 +146,28 @@
 
 ### 示例 3：今天有什么活动？（活动雷达）
 
-> **你**：今天麦当劳有什么活动？权志龙那个联名汉堡上了吗？
+> **你**：今天麦当劳有什么活动？权志龙那个联名上了吗？
 >
-> **管家**：## 📡 麦麦活动雷达 · 2026-10-09
+> **管家**：## 📡 麦麦活动雷达 · 2026-10-09（真实返回）
 >
-> ### 🔥 今天就能吃（进行中）
-> | 活动 | 内容 / 联名 | 周期 | 状态 |
+> ### 🔥 今天就能吃（14 个）
+> | 活动 | 亮点 | 起价 |
+> |---|---|---|
+> | **麦当劳 X PEACEMINUSONE** | 即刻入手 GD 同款复古棒球帽 | - |
+> | **麦当劳联动 G-DRAGON** | 8da888~Spicy~ | - |
+> | **韩式风味蘸酱上新❤️就「酱」心有所「薯」** | 龙焰来袭！韩式新品开吃！ | - |
+> | **🫐一口爆汁！蓝莓爆爆珠麦旋风上新** | 蓝莓清香一口爆开 | - |
+> | **早餐爆款回归，快来 pick 你的厚松饼堡！** | 巧克力味限时上新 | - |
+> | ... | 共 14 个 | |
+>
+> ### ⏰ 后续档期（13 个）
+> | 日期 | 活动 | 亮点 | 还有 |
 > |---|---|---|---|
-> | 权志龙联名汉堡 | 联名限定汉堡 + 限定周边 | 10.08 ~ 10.28 | **进行中 · 剩 19 天** |
-> | 麦麦省会员日 | 会员日专属券包 | 10.01 ~ 10.31 | **进行中 · 剩 22 天** |
+> | 2026-10-10 | 预约麦金喜抽奖，🉐[积分霸王餐] | 想要，积分霸王餐来啦！ | **1 天** |
+> | 2026-10-15 | 麦当劳 X PEACEMINUSONE | 想抢，联名徽章即将登场 | **6 天** |
+> | 2026-10-22 | 第三周周边即将开售✨限定主题丝巾！ | 时尚 DNA 动了！ | **13 天** |
 >
-> ### ⏰ 即将开始
-> | 活动 | 内容 | 开始日 | 还有 |
-> |---|---|---|---|
-> | 万圣节限定 | 万圣节主题包装 | 2026-10-20 | **11 天** |
->
-> **建议**：联名款通常库存有限，想尝鲜建议今明两天到店；顺手把会员日券包领了，能叠在联名套餐上用。
+> **建议**：G-DRAGON 联名今天已经在架，联名周边通常库存有限，想入手建议今明两天到店；徽章 10-15 开档，届时可留意 App。
 
 > 💡 **不会漏掉上新**：把「查一下麦麦活动」设成 WorkBuddy 定时任务，每周一早上自动跑一次，有新的联名或限定直接推给你。
 
@@ -199,12 +210,15 @@
 ```bash
 export MCD_MCP_TOKEN="你的Token"
 
-python3 scripts/mcd_wool.py doctor     # 连通性自检
-python3 scripts/mcd_wool.py coupons    # 只看券包
+python3 scripts/mcd_wool.py doctor     # 连通性自检（实测返回 35 个 Tool）
+python3 scripts/mcd_wool.py available  # 看麦麦省现在能领什么券
+python3 scripts/mcd_wool.py bind       # 一键领券（实测券包 1 张 → 9 张）
+python3 scripts/mcd_wool.py coupons    # 只看券包（含临期告警）
 python3 scripts/mcd_wool.py points     # 只看积分
+python3 scripts/mcd_wool.py lottery    # 积分抽奖 + 奖池
 python3 scripts/mcd_wool.py campaign   # 只看活动雷达
-python3 scripts/mcd_wool.py bind       # 一键领券
-python3 scripts/mcd_wool.py report     # 券包 + 积分 + 活动 + 徽章 合并报告
+python3 scripts/mcd_wool.py mall       # 积分商城商品
+python3 scripts/mcd_wool.py report     # 券包+积分+活动+徽章+抽奖 合并报告
 
 # 徽章日历不需要 Token，纯本地推算，离线也能跑
 python3 scripts/mcd_wool.py badge
