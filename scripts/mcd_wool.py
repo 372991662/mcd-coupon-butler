@@ -400,15 +400,28 @@ def _coupon_channel(c):
 
 
 def _coupon_value(c, name=None):
-    """券的权益文案：优先面额（分→元），退化到现成文案。
+    """券的权益文案。
 
-    麦当劳很多券的 subtitle 与 title 完全一致（等于没给信息），
-    此时展示 denomination 换算出的面额更有用。
+    真实字段优先级：
+      1) discountInfo.discountValue —— 「用券价格」，形如 {"discountDesc":"用券价格",
+         "discountValue":"9.9","discountTypeText":"¥"}  → 展示为「用券价 ¥9.9」
+      2) denomination / tenderAmount —— 单位为**分**，仅在有值时换算（2990 → ¥29.90）
+      3) 现成文案兜底
+
+    注意：不少券的 subtitle 与 title 完全一致（等于没给信息），这类要跳过。
     """
+    di = c.get("discountInfo") if isinstance(c.get("discountInfo"), dict) else {}
+    val = str(di.get("discountValue") or "").strip()
+    unit = str(di.get("discountTypeText") or "").strip() or "¥"
+    desc = str(di.get("discountDesc") or "").strip().replace("价格", "价")
+    if val and val not in ("0", "0.0", "0.00", "-"):
+        price = "%s%s" % (unit, val)
+        return ("%s %s" % (desc, price)) if desc else price
+
     cents = as_int(pick(c, "denomination", "tenderAmount"))
     if cents:
         return "¥%.2f" % (cents / 100.0)
-    for key in ("reducePriceText", "discountDesc", "subtitle", "subTitle",
+    for key in ("reducePriceText", "subtitle", "subTitle",
                 "couponDesc", "description", "benefit"):
         text = c.get(key)
         if text and str(text).strip() and str(text).strip() != name:
@@ -754,12 +767,22 @@ def render_campaign(data, now_text):
     lines = []
     if ongoing:
         lines.append("### 🔥 今天就能吃（%d 个）" % len(ongoing))
-        lines.append("| 活动 | 亮点 | 起价 |")
-        lines.append("|---|---|---|")
+        # 若日历未返回任何有效价格，则不展示「起价」列，避免整列都是「-」
+        show_price = any(a.get("price") for a in ongoing)
+        if show_price:
+            lines.append("| 活动 | 亮点 | 起价 |")
+            lines.append("|---|---|---|")
+        else:
+            lines.append("| 活动 | 亮点 |")
+            lines.append("|---|---|")
         for a in ongoing:
-            price = ("¥%s%s" % (a["price"], a["price_suffix"])) if a.get("price") else "-"
-            lines.append("| **%s**%s | %s | %s |" % (
-                a["name"], (" `%s`" % a["tag"]) if a.get("tag") else "", a["desc"], price))
+            head = "**%s**%s" % (
+                a["name"], (" `%s`" % a["tag"]) if a.get("tag") else "")
+            if show_price:
+                price = ("¥%s%s" % (a["price"], a["price_suffix"])) if a.get("price") else "-"
+                lines.append("| %s | %s | %s |" % (head, a["desc"], price))
+            else:
+                lines.append("| %s | %s |" % (head, a["desc"]))
         lines.append("")
 
     if upcoming:
