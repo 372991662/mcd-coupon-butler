@@ -477,6 +477,32 @@ def _coupon_value(c, name=None):
     return "-"
 
 
+# 券状态：接口常同时返回英文枚举 couponStatus 与中文 label，以中文 label 为准。
+_STATUS_TEXT = {
+    "CAN_GET": "可领取",
+    "CAN_RECEIVE": "可领取",
+    "CAN_CLAIM": "可领取",
+    "HAVING_RECEIVE": "已领取",
+    "HAS_RECEIVE": "已领取",
+    "RECEIVED": "已领取",
+    "USED": "已使用",
+    "EXPIRED": "已过期",
+}
+_CLAIMABLE_TEXT = {"可领取"}
+
+
+def _status_text(raw):
+    """把 couponStatus / label 统一成中文状态文案。"""
+    s = str(raw or "").strip()
+    if not s:
+        return "未知"
+    return _STATUS_TEXT.get(s, s)
+
+
+def _is_claimable(raw):
+    return _status_text(raw) in _CLAIMABLE_TEXT
+
+
 def _coupon_row(c, now_text):
     name = pick(c, "title", "couponName", "name", "couponTitle") or "未命名券"
     expiry = parse_date(pick(c, "tradeEndDateTime", "tradeEndDate", "expireTime", "expireDate",
@@ -485,7 +511,7 @@ def _coupon_row(c, now_text):
         "name": name,
         "value": _coupon_value(c, name),
         "channel": _coupon_channel(c),
-        "status": pick(c, "couponStatus", "label"),
+        "status": pick(c, "label", "couponStatus"),
         "expiry": expiry or "-",
         "left": days_left(expiry, now_text) if expiry else None,
     }
@@ -504,16 +530,21 @@ def render_coupons(coupons, now_text, limit=40):
 
     # 「可领券」列表（available-coupons）结构更简单：无到期日、无渠道，
     # 只关心「能不能领」，此时渲染成紧凑清单比空表格更清楚。
+    # 注意：该接口会同时返回「可领取」与「已领取」两种状态（label 字段），
+    # 不能一律当作可新领，否则会误导用户重复领券。
     if all(r["expiry"] == "-" and r["channel"] == "-" for r in rows):
+        claimable = [r for r in rows if _is_claimable(r["status"])]
         lines.append("| 券名 | 状态 |")
         lines.append("|---|---|")
         for r in rows[:limit]:
-            status = r["status"] or "-"
-            mark = "✅" if str(status) in ("可领取", "CAN_GET") else status
-            lines.append("| %s | %s |" % (r["name"], mark))
+            st = _status_text(r["status"])
+            lines.append("| %s | %s |" % (r["name"], st))
         if len(rows) > limit:
             lines.append("\n> 仅展示前 %d 张，共 %d 张。" % (limit, len(rows)))
-        lines.append("\n> 💡 用 `bind` 命令可以把这些券一次性全领到券包里。")
+        if claimable:
+            lines.append("\n> 💡 有 **%d 张可新领**，用 `bind` 命令一次性收进券包。" % len(claimable))
+        else:
+            lines.append("\n> 💡 以上均已在券包中，当前**没有可新领**的券。")
         return "\n".join(lines) + "\n"
 
     # 有到期日的按剩余天数升序；无到期日的排最后，但仍参与展示
@@ -1010,7 +1041,13 @@ def cmd_bind(client, _args):
     if not ok:
         print("⚠️ 领券失败：%s" % data, file=sys.stderr)
         return 1
-    print("✅ 已发起一键领券。")
+    body = data if isinstance(data, dict) else {}
+    # 接口用 success=false + code=499 表示「暂无可领取」，这是正常结果而非错误
+    if body.get("success") is False:
+        print("ℹ️ **没有可新领的券**：%s" % (body.get("message") or "暂无可领取的优惠券"))
+        print("\n> 可领列表里的券已是「已领取」状态，无需重复领。")
+        return 0
+    print("✅ 一键领券完成。")
     if data is not None:
         print("```json\n%s\n```" % json.dumps(data, ensure_ascii=False, indent=2))
     return 0
@@ -1038,13 +1075,15 @@ def cmd_lottery(client, _args):
 
 
 def cmd_available(client, args):
-    """查看当前「可领取」的麦麦省优惠券（未领取前）。"""
+    """查看麦麦省券列表（同时含「可领取」与「已领取」两种状态）。"""
     ok, data = safe_call(client, "available-coupons")
     if not ok:
         print("⚠️ 获取失败：%s" % data, file=sys.stderr)
         return 1
-    print("## 🎁 可领取的麦麦省优惠券\n")
-    print(render_coupons(unwrap(data), "", limit=args.size))
+    items = [c for c in (unwrap(data) or []) if isinstance(c, dict)]
+    claimable = [c for c in items if _is_claimable(_coupon_row(c, "")["status"])]
+    print("## 🎁 麦麦省券 · 可新领 %d / 共 %d\n" % (len(claimable), len(items)))
+    print(render_coupons(items, "", limit=args.size))
     return 0
 
 
