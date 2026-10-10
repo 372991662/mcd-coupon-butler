@@ -118,7 +118,7 @@ metadata:
 
 **流程**：
 
-1. 调用 `available-coupons` 查看麦麦省当前可领券（让用户知道"能领什么"）。
+1. 调用 `available-coupons` 查看麦麦省券列表 —— 注意它**同时返回「可领取」与「已领取」两种状态**，只有 `label`/`couponStatus` 为可领取的才真正能领。
 2. 调用 `auto-bind-coupons` 一键领取全部可领券。
 3. 调用 `query-my-coupons` 拉取领取后的完整券包。
 4. 调用 `now-time-info` 取当前时间，计算每张券的剩余天数。
@@ -321,3 +321,5 @@ metadata:
 17. 券面额字段 `denomination` / `tenderAmount` 单位是**分**（如 2990 = ¥29.90），不要直接当元展示。
 18. `query-my-coupons` 返回中 `subtitle` 常与 `title` 完全相同，不是有效权益信息，此时改用面额展示。
 19. 实测 `mcd-mcp 1.0.0` 共开放 **35** 个 Tool；`doctor` 命令可随时核对当前数量与清单。
+20. **`available-coupons` 会把已领取的券一起返回**（`couponStatus: HAVING_RECEIVE`、`label: "已领取"`），**不能**一律当成"可领"。判断口径以中文 `label` 为准，只有 `可领取 / CAN_GET / CAN_RECEIVE` 才是真能领的。把它们全说成"可领取"会造成用户误以为券没领到。
+21. `auto-bind-coupons` 在**无可新领券**时返回 `success: false` + `code: 499` + `"暂无可领取的优惠券"` —— 这是**正常结果不是错误**，如实转述即可，不要重试、不要报成失败，也不要因此说"领券功能坏了"。
