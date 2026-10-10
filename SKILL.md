@@ -323,3 +323,5 @@ metadata:
 19. 实测 `mcd-mcp 1.0.0` 共开放 **35** 个 Tool；`doctor` 命令可随时核对当前数量与清单。
 20. **`available-coupons` 会把已领取的券一起返回**（`couponStatus: HAVING_RECEIVE`、`label: "已领取"`），**不能**一律当成"可领"。判断口径以中文 `label` 为准，只有 `可领取 / CAN_GET / CAN_RECEIVE` 才是真能领的。把它们全说成"可领取"会造成用户误以为券没领到。
 21. `auto-bind-coupons` 在**无可新领券**时返回 `success: false` + `code: 499` + `"暂无可领取的优惠券"` —— 这是**正常结果不是错误**，如实转述即可，不要重试、不要报成失败，也不要因此说"领券功能坏了"。
+22. **`mall-points-products` 的列表包含已下架商品**，不能直接当"可兑换"推荐。实测 24 个积分商品券里有 **14 个**已下架（`mall-product-detail` 返回 `code 610403 商品已下架`）。推荐兑换前**必须**逐条用 `mall-product-detail` 核验；脚本 `mall` 命令默认已做核验（`--no-check` 可跳过）。另外该列表 `price` 字段恒为 0，**拿不到原价**，所以"每积分价值"只能给保守口径，不要编原价。
+23. `mall-points-products` 支持 `catRuleIds` 筛选（如 `1>4` = 商品券、`2>8` = 周边、`1>6>20` = 生日派对）；不传时把派对类现金商品也一并返回，其中 `point` 为 0 的**不是积分兑换品**，别混进积分榜单。
