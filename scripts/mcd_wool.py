@@ -886,8 +886,36 @@ def render_campaign(data, now_text):
     return "\n".join(lines) + "\n"
 
 
-def render_mall(data, limit=20):
-    """渲染麦麦商城（积分兑换）商品列表，标出所需积分与价格。"""
+def verify_mall(client, data):
+    """逐个核验商品券是否仍可兑换。
+
+    实测：`mall-points-products` 返回的列表**包含已下架商品**（如 50 积分的
+    「18.8元麦辣鸡腿汉堡两件套」详情返回 code 610403「商品已下架」），若直接
+    把列表当"可兑"推荐给用户，会引导其兑换一个根本兑不了的商品。
+    这里用只读的 `mall-product-detail` 逐条核验，返回 {spuId: 不可兑原因}。
+    """
+    items = unwrap(data)
+    if not isinstance(items, list):
+        return {}
+    bad = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sid = pick(it, "spuId", "id")
+        if sid is None:
+            continue
+        ok, det = safe_call(client, "mall-product-detail", {"spuId": as_int(sid)})
+        if ok and isinstance(det, dict) and det.get("success") is False:
+            bad[str(sid)] = str(det.get("message") or "不可兑换")
+    return bad
+
+
+def render_mall(data, limit=20, bad=None):
+    """渲染麦麦商城（积分兑换）商品列表，标出所需积分与价格。
+
+    `bad` 为 verify_mall() 的结果：不为 None 时进入「已核验」模式，
+    额外输出可兑状态列，并把可兑商品排在前、已下架商品折叠到末尾。
+    """
     if data is None:
         return "> 未能获取商城商品。\n"
     if isinstance(data, str):
@@ -910,19 +938,40 @@ def render_mall(data, limit=20):
             "point": point,
             "price": ("¥%s" % price) if price not in (None, "", "0") else "-",
             "desc": re.sub(r"\s+", " ", str(pick(it, "selling", "desc", "description") or "-"))[:40],
+            "id": str(pick(it, "spuId", "id") or ""),
         })
     if not rows:
         return "> 商城返回了数据，但没有可兑换商品。\n"
 
-    # 能纯积分兑换的（point>0）优先，其次按所需积分升序
-    rows.sort(key=lambda r: (r["point"] == 0, r["point"]))
+    if bad is None:
+        # 能纯积分兑换的（point>0）优先，其次按所需积分升序
+        rows.sort(key=lambda r: (r["point"] == 0, r["point"]))
+        lines = ["| 商品 | 分类 | 所需积分 | 价格 | 说明 |", "|---|---|---:|---|---|"]
+        for r in rows[:limit]:
+            pt = "**%d**" % r["point"] if r["point"] else "现金"
+            lines.append("| %s | %s | %s | %s | %s |" % (r["name"], r["cat"], pt, r["price"], r["desc"]))
+        if len(rows) > limit:
+            lines.append("\n> 仅展示前 %d 个，共 %d 个。" % (limit, len(rows)))
+        return "\n".join(lines) + "\n"
 
-    lines = ["| 商品 | 分类 | 所需积分 | 价格 | 说明 |", "|---|---|---:|---|---|"]
-    for r in rows[:limit]:
+    # 已核验模式：可兑优先，下架折叠
+    for r in rows:
+        r["bad"] = bad.get(r["id"])
+    live = [r for r in rows if not r["bad"]]
+    dead = [r for r in rows if r["bad"]]
+    live.sort(key=lambda r: (r["point"] == 0, r["point"]))
+
+    lines = ["| 商品 | 分类 | 所需积分 | 价格 | 可兑 |", "|---|---|---:|---|---|"]
+    for r in live[:limit]:
         pt = "**%d**" % r["point"] if r["point"] else "现金"
-        lines.append("| %s | %s | %s | %s | %s |" % (r["name"], r["cat"], pt, r["price"], r["desc"]))
-    if len(rows) > limit:
-        lines.append("\n> 仅展示前 %d 个，共 %d 个。" % (limit, len(rows)))
+        lines.append("| %s | %s | %s | %s | ✅ |" % (r["name"], r["cat"], pt, r["price"]))
+    if not live:
+        lines.append("| _无_ | | | | |")
+    if len(dead):
+        lines.append("\n<details><summary>已下架、不可兑换（%d 个，勿推荐）</summary>\n" % len(dead))
+        for r in dead:
+            lines.append("- %s（%s 积分）—— %s" % (r["name"], r["point"], r["bad"]))
+        lines.append("\n</details>")
     return "\n".join(lines) + "\n"
 
 
@@ -1058,8 +1107,11 @@ def cmd_mall(client, args):
     if not ok:
         print("⚠️ 获取失败：%s" % data, file=sys.stderr)
         return 1
+    bad = None if getattr(args, "no_check", False) else verify_mall(client, data)
     print("## 🛍️ 麦麦商城 · 可兑换商品\n")
-    print(render_mall(data, limit=args.size))
+    print(render_mall(data, limit=args.size, bad=bad))
+    if bad is not None and bad:
+        print("> ℹ️ 商城列表会包含已下架商品，上表已逐条核验并剔除（%d 个不可兑）。" % len(bad))
     return 0
 
 
@@ -1117,7 +1169,13 @@ def cmd_report(client, args):
     if args.with_mall:
         print("### 六、麦麦商城\n")
         ok, data = safe_call(client, "mall-points-products", {"pageIndex": 1, "pageSize": 20})
-        print(render_mall(data, limit=20) if ok else "> ⚠️ %s\n" % data)
+        if ok:
+            bad = None if getattr(args, "no_check", False) else verify_mall(client, data)
+            print(render_mall(data, limit=20, bad=bad))
+            if bad:
+                print("> ℹ️ 商城列表含已下架商品，上表已逐条核验剔除（%d 个不可兑）。" % len(bad))
+        else:
+            print("> ⚠️ %s\n" % data)
     return 0
 
 
@@ -1182,6 +1240,8 @@ def main(argv=None):
     parser.add_argument("--url", default=os.environ.get("MCD_MCP_URL", DEFAULT_URL), help="MCP 接入地址")
     parser.add_argument("--size", type=int, default=20, help="mall 命令返回的商品数量")
     parser.add_argument("--with-mall", action="store_true", help="report 命令附带商城商品")
+    parser.add_argument("--no-check", action="store_true",
+                        help="跳过商城可兑性核验（mall / report --with-mall 更快，但可能列出已下架商品）")
     parser.add_argument("--confirm", action="store_true",
                         help="确认执行会消耗积分/金钱的操作（抽奖、积分兑换、下单）。"
                              "不加此开关时，这类操作一律被拦截。")
